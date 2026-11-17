@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#12251f" />
+    <meta name="description" content="A polished pickleball court booking and facility management demo." />
+    <title>RallyCourt — Play more. Book easier.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="demo-ribbon"><span class="status-dot"></span> INTERACTIVE PRODUCT DEMO <span class="ribbon-divider">·</span> All bookings and reports use sample data</div>
+    <header class="site-header">
+      <a class="brand" href="#home" aria-label="RallyCourt home"><span class="brand-mark">R<span>+</span></span><span>rally<span class="brand-light">court</span></span></a>
+      <button class="mobile-menu-button" aria-label="Open navigation" aria-expanded="false"><span></span><span></span></button>
+      <nav class="main-nav" aria-label="Main navigation">
+        <a href="#home" data-link="home">Home</a>
+        <a href="#courts" data-link="courts">Courts</a>
+        <a href="#leaderboard" data-link="leaderboard">Leaderboard</a>
+        <a href="#about" data-link="about">About</a>
+      </nav>
+      <div class="header-actions">
+        <a class="management-link" href="#management">Management demo <span aria-hidden="true">↗</span></a>
+        <a href="#book" class="button button-primary button-small">Book a court <span aria-hidden="true">→</span></a>
+      </div>
+    </header>
+    <main id="app" tabindex="-1"></main>
+    <footer class="site-footer">
+      <div class="footer-main">
+        <div class="footer-brand-block">
+          <a class="brand brand-footer" href="#home"><span class="brand-mark">R<span>+</span></span><span>rally<span class="brand-light">court</span></span></a>
+          <p>More time on court. Less time figuring it out.</p>
+        </div>
+        <div class="footer-links">
+          <div><strong>Explore</strong><a href="#courts">Our courts</a><a href="#leaderboard">Leaderboard</a><a href="#book">Book a court</a></div>
+          <div><strong>Get in touch</strong><a href="mailto:hello@rallycourt.example">hello@rallycourt.example</a><span>Mon–Sun · 7am–10pm</span><div class="social-links"><a href="#contact" aria-label="Instagram">ig</a><a href="#contact" aria-label="Facebook">f</a><a href="#contact" aria-label="X">𝕏</a></div></div>
+        </div>
+      </div>
+      <div class="footer-bottom"><span>© 2026 RallyCourt · Fictional facility demo</span><span>Built for better days on court <span class="footer-ball">●</span></span></div>
+    </footer>
+    <div id="modal-root"></div>
+    <div id="toast-root" aria-live="polite"></div>
+    <script src="./mock-data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
