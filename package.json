@@ -1,0 +1,11 @@
+{
+  "name": "rallycourt-booking",
+  "version": "1.0.0",
+  "private": true,
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.cjs --preview",
+    "start:production": "node --env-file-if-exists=.env server.cjs",
+    "test": "node --test"
+  }
+}

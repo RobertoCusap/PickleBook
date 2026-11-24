@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#12251f" />
-    <meta name="description" content="A polished pickleball court booking and facility management demo." />
+    <meta name="description" content="Find a pickleball court and choose a time to play." />
     <title>RallyCourt — Play more. Book easier.</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -28,6 +28,7 @@
       </div>
     </header>
     <main id="app" tabindex="-1"></main>
+    <noscript><p class="page-wrap">Enable JavaScript to view court availability and book.</p></noscript>
     <footer class="site-footer">
       <div class="footer-main">
         <div class="footer-brand-block">
@@ -43,6 +44,8 @@
     </footer>
     <div id="modal-root"></div>
     <div id="toast-root" aria-live="polite"></div>
+    <script src="./runtime-config.js"></script>
+    <script src="./booking-rules.js"></script>
     <script src="./mock-data.js"></script>
     <script src="./app.js"></script>
   </body>

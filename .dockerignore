@@ -1,0 +1,5 @@
+.git
+.env
+data
+facility.json
+node_modules

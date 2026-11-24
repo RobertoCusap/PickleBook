@@ -1,0 +1,11 @@
+{
+  "name": "RallyCourt",
+  "location": "Replace with your facility’s full address",
+  "email": "bookings@example.com",
+  "courts": [
+    { "id": "c1", "name": "The Center Court", "type": "Indoor", "surface": "Pro cushioned", "price": 400 },
+    { "id": "c2", "name": "Garden Court", "type": "Outdoor", "surface": "Outdoor acrylic", "price": 400 },
+    { "id": "c3", "name": "The Northside", "type": "Indoor", "surface": "Pro cushioned", "price": 400 },
+    { "id": "c4", "name": "Sunset Court", "type": "Outdoor", "surface": "Outdoor acrylic", "price": 400 }
+  ]
+}

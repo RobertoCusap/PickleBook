@@ -1,12 +1,32 @@
 (() => {
   "use strict";
-  const D = window.RALLY_DATA;
   const app = document.querySelector("#app");
   const modalRoot = document.querySelector("#modal-root");
   const toastRoot = document.querySelector("#toast-root");
-  const STORAGE_KEY = "rallycourt-demo-bookings-v1";
-  const money = (n) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
-  const dateFmt = (date, options = { weekday: "long", month: "long", day: "numeric", year: "numeric" }) => new Date(`${date}T12:00:00`).toLocaleDateString("en-US", options);
+  const config = window.RALLY_CONFIG;
+  if (!config || !["demo", "live"].includes(config.mode) || !window.RALLY_RULES) {
+    app.textContent = "RallyCourt is temporarily unavailable. Please reload the page to try again.";
+    return;
+  }
+  const live = config.mode === "live";
+  const preview = live && config.preview;
+  const facility = config.facility;
+  const D = live ? { courts: facility.courts, reservations: [], players: [] } : window.RALLY_DATA;
+  const rules = window.RALLY_RULES;
+  const STORAGE_KEY = "rallycourt-demo-bookings-v2";
+  const REQUEST_KEY = "rallycourt-active-reservation";
+  const VENUE_TIME_ZONE = rules.timeZone;
+  const priceFormat = new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP", maximumFractionDigits: 0 });
+  const money = (n) => priceFormat.format(n);
+  const venueDateKey = (date = new Date()) => rules.venueTime(date).date;
+  const addDays = rules.addDays;
+  const weekStartFor = (date) => {
+    const value = new Date(`${date}T12:00:00Z`);
+    const day = (value.getUTCDay() + 6) % 7;
+    return addDays(date, -day);
+  };
+  const dateFmt = (date, options = { weekday: "long", month: "long", day: "numeric", year: "numeric" }) =>
+    new Date(`${date}T12:00:00Z`).toLocaleDateString("en-PH", { ...options, timeZone: VENUE_TIME_ZONE });
   const clock = (value) => {
     const [h, m] = value.split(":").map(Number);
     return `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
@@ -21,18 +41,38 @@
     return h + m / 60;
   };
   const getSavedBookings = () => {
+    if (live) return [];
     try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem("rallycourt-demo-bookings-v1") ?? "[]");
       return Array.isArray(saved) ? saved.filter((row) =>
         row && D.courts.some((court) => court.id === row.courtId) &&
-        /^\d{4}-\d{2}-\d{2}$/.test(row.date) && /^\d{2}:\d{2}$/.test(row.start) &&
-        Number(row.duration) > 0 && row.status === "confirmed"
+        rules.validDate(row.date) && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(row.start) &&
+        Number.isFinite(Number(row.duration)) && Number(row.duration) > 0 && row.status === "confirmed"
       ) : [];
     } catch { return []; }
   };
+  const readRequestKey = () => {
+    try { return sessionStorage.getItem(REQUEST_KEY); }
+    catch { return null; }
+  };
+  function setRequestKey(booking, key) {
+    booking.requestKey = key;
+    try {
+      if (key) sessionStorage.setItem(REQUEST_KEY, key);
+      else sessionStorage.removeItem(REQUEST_KEY);
+    } catch { /* In-memory retries still use the original request key. */ }
+  }
+  const createBookingState = () => {
+    const today = venueDateKey();
+    return {
+      selectedSlots: [], otherDates: new Map(), date: today, weekStart: weekStartFor(today), court: "all", band: "all",
+      customer: { name: "", email: "", phone: "" }, errors: {}, confirmation: null, step: 1, message: "",
+      requestKey: live ? readRequestKey() : null, submitting: false, recovering: false, retryPending: false, availability: null, serverClock: null,
+    };
+  };
   const state = {
     route: location.hash.slice(1) || "home",
-    booking: { courtId: "", date: "", start: "", duration: 1, customer: { name: "", email: "", phone: "" }, confirmation: null, step: 1 },
+    booking: createBookingState(),
     leaderboard: { category: "overall", period: "all", search: "" },
     analytics: { range: "month", start: "", end: "" },
     savedBookings: getSavedBookings(),
@@ -77,7 +117,7 @@
         <div class="hero-actions">${button(`Try player booking ${icon("arrow", 17)}`, "#book")}<a href="#management" class="button button-outline-light">See the owner dashboard</a></div>
         <div class="hero-note"><span class="hero-note-icon">${icon("clock", 17)}</span><span><strong>Courts open daily</strong><br />7:00 am – 10:00 pm</span><span class="note-divider"></span><span><strong>4 premium courts</strong><br />Indoor & outdoor play</span></div>
       </div>
-      <div class="hero-side-label">AUSTIN, TEXAS <span>·</span> EST. FOR YOUR NEXT MATCH</div>
+      <div class="hero-side-label">MANILA, PHILIPPINES <span>·</span> EST. FOR YOUR NEXT MATCH</div>
     </section>
     <section class="trust-strip"><div class="page-wrap trust-inner"><span>ONE PLATFORM. TWO GREAT EXPERIENCES.</span><div><span>${icon("check", 16)} Effortless player booking</span><span>${icon("check", 16)} Club owner insights</span><span>${icon("check", 16)} Community rankings</span></div></div></section>
     <section class="section page-wrap section-courts">
@@ -86,42 +126,160 @@
     </section>
     <section class="process-section"><div class="page-wrap process-layout"><div class="process-intro"><span class="eyebrow eyebrow-light">THAT'S THE WHOLE POINT</span><h2>From “game on?”<br />to <em>on the court.</em></h2><p>No calls, no back-and-forth. Your next game is just a few taps away.</p>${button(`Book your next game ${icon("arrow", 16)}`, "#book", "button button-light")}</div><div class="process-steps"><article><span class="step-number">01</span><div class="step-icon">${icon("ball", 25)}</div><h3>Pick your court</h3><p>Choose the setup that feels right, indoors or under the open sky.</p></article><article><span class="step-number">02</span><div class="step-icon">${icon("clock", 25)}</div><h3>Find your time</h3><p>See open time slots and book the one that fits your day.</p></article><article><span class="step-number">03</span><div class="step-icon">${icon("check", 25)}</div><h3>Bring your game</h3><p>Get your confirmation and show up ready to play.</p></article></div></div></section>
     <section class="section page-wrap amenity-section"><div class="amenity-photo"><img src="https://images.unsplash.com/photo-1592656094267-764a45160876?auto=format&fit=crop&w=1200&q=85" alt="Players enjoying a pickleball match" loading="lazy" /><span class="photo-caption">GOOD PEOPLE. GREAT RALLIES.</span></div><div class="amenity-copy"><span class="eyebrow">A LITTLE MORE THAN A COURT</span><h2>Everything you need.<br /><em>Nothing you don't.</em></h2><p>A welcoming neighborhood club where every level belongs, and every match feels like a good one.</p><ul class="amenity-list"><li><span>${icon("check", 15)}</span> Quality paddles available to borrow</li><li><span>${icon("check", 15)}</span> Water station & shaded seating</li><li><span>${icon("check", 15)}</span> Locker rooms and clean facilities</li><li><span>${icon("check", 15)}</span> Beginner-friendly community sessions</li></ul><a href="#about" class="text-link">A little more about us ${icon("arrow", 15)}</a></div></section>
-    <section class="rates-section"><div class="page-wrap rates-layout"><div><span class="eyebrow eyebrow-light">STRAIGHTFORWARD PRICING</span><h2>Good games.<br /><em>Good value.</em></h2><p>Book by the hour. Bring your crew. We’ll take care of the rest.</p><a href="#courts" class="text-link text-link-light">See court details ${icon("arrow", 15)}</a></div><div class="rate-cards"><div><span>OUTDOOR COURTS</span><strong>From <b>$22</b><small> / hour</small></strong><p>Fresh air and open-sky rallies.</p></div><div class="rate-card-featured"><span>INDOOR COURTS</span><strong>From <b>$28</b><small> / hour</small></strong><p>All-weather play, any day.</p></div></div></div></section>
+    <section class="rates-section"><div class="page-wrap rates-layout"><div><span class="eyebrow eyebrow-light">STRAIGHTFORWARD PRICING</span><h2>Good games.<br /><em>Good value.</em></h2><p>Book by the hour. Bring your crew. We’ll take care of the rest.</p><a href="#courts" class="text-link text-link-light">See court details ${icon("arrow", 15)}</a></div><div class="rate-cards"><div><span>OUTDOOR COURTS</span><strong><b>₱400</b><small> / hour</small></strong><p>Fresh air and open-sky rallies.</p></div><div class="rate-card-featured"><span>INDOOR COURTS</span><strong><b>₱400</b><small> / hour</small></strong><p>All-weather play, any day.</p></div></div></div></section>
     <section class="section testimonial-section page-wrap"><span class="eyebrow">DON'T JUST TAKE OUR WORD FOR IT</span><h2>Good games have a way of <em>bringing us back.</em></h2><div class="testimonial-grid"><article><div class="stars">★★★★★</div><blockquote>“The easiest court booking I’ve ever used. We’re playing twice a week now.”</blockquote><div class="testimonial-person"><div class="avatar avatar-small" style="--avatar:#dce6fb">JR</div><span><strong>Jordan Rivera</strong><small>Regular since 2024</small></span></div></article><article><div class="stars">★★★★★</div><blockquote>“Great courts, great people, and I can book from my phone in seconds.”</blockquote><div class="testimonial-person"><div class="avatar avatar-small" style="--avatar:#c9e8d7">MC</div><span><strong>Maya Chen</strong><small>League player</small></span></div></article><article><div class="stars">★★★★★</div><blockquote>“Finally found a place where beginners feel just as welcome as everyone else.”</blockquote><div class="testimonial-person"><div class="avatar avatar-small" style="--avatar:#f9dfc8">SP</div><span><strong>Sam Patel</strong><small>Community member</small></span></div></article></div></section>
     <section class="cta-band page-wrap"><div><span class="eyebrow eyebrow-light">BUILT FOR PICKLEBALL FACILITIES</span><h2>Give your club a better way to run.</h2><p>Explore a connected booking, leaderboard, and analytics experience—then picture it with your brand.</p></div><div class="cta-actions">${button(`Explore the owner dashboard ${icon("arrow", 16)}`, "#management", "button button-light")}<a href="#book" class="cta-secondary-link">Try the player experience →</a></div></section>`;
   }
 
   function renderCourts() {
     return `<section class="page-hero page-wrap"><div><span class="eyebrow">FOUR COURTS. ENDLESS GOOD GAMES.</span><h1>Find your <em>court.</em></h1><p>Premium spaces, friendly faces, and a court that fits your kind of game.</p></div><div class="court-summary"><strong>4</strong><span>unique courts<br />ready to play</span></div></section>
-      <section class="page-wrap courts-page-content"><div class="filters-bar"><div class="filter-chips"><button class="chip active" data-court-filter="all">All courts <span>4</span></button><button class="chip" data-court-filter="Indoor">Indoor</button><button class="chip" data-court-filter="Outdoor">Outdoor</button></div><span class="muted-copy">${icon("pin", 15)} Austin, Texas · Open daily</span></div><div class="court-grid courts-full-grid" id="court-list">${D.courts.map(courtCard).join("")}</div>
+      <section class="page-wrap courts-page-content"><div class="filters-bar"><div class="filter-chips"><button class="chip active" data-court-filter="all">All courts <span>4</span></button><button class="chip" data-court-filter="Indoor">Indoor</button><button class="chip" data-court-filter="Outdoor">Outdoor</button></div><span class="muted-copy">${icon("pin", 15)} Manila, Philippines · Open daily</span></div><div class="court-grid courts-full-grid" id="court-list">${D.courts.map(courtCard).join("")}</div>
       <div class="amenities-strip"><div><span class="amenity-icon">${icon("ball", 19)}</span><span><strong>Equipment</strong><small>Paddles to borrow</small></span></div><div><span class="amenity-icon">${icon("sun", 19)}</span><span><strong>All levels</strong><small>Everyone welcome</small></span></div><div><span class="amenity-icon">${icon("clock", 19)}</span><span><strong>Open every day</strong><small>7am – 10pm</small></span></div><div><span class="amenity-icon">${icon("check", 19)}</span><span><strong>Easy booking</strong><small>Reserve in minutes</small></span></div></div></section>`;
   }
 
-  function slotIsAvailable(courtId, date, start, duration) {
-    const startH = hourValue(start);
-    return !allReservations().some((r) => {
-      if (r.courtId !== courtId || r.date !== date || r.status === "cancelled") return false;
-      const bookedStart = hourValue(r.start);
-      const bookedEnd = bookedStart + Number(r.duration);
-      return startH < bookedEnd && startH + Number(duration) > bookedStart;
-    });
+  function renderLiveHome() {
+    return `<section class="live-hero"><div class="page-wrap"><p class="eyebrow eyebrow-light">${escapeHtml(facility.name)}</p><h1>Book your next<br><em>pickleball game.</em></h1><p>See available courts, choose your hours, and pay at the venue.</p><div class="hero-actions">${button("Book a court", "#book")}${button("View courts", "#courts", "button button-outline-light")}</div></div></section>
+      <section class="page-wrap live-info"><div><h2>Find us</h2><p>${escapeHtml(facility.location)}</p></div><div><h2>Hours</h2><p>Daily · ${clockFromHour(rules.openHour)} – ${clockFromHour(rules.closeHour)} Manila time</p></div></section>`;
   }
-  const timeSlots = () => Array.from({ length: 15 }, (_, i) => `${String(i + 7).padStart(2, "0")}:00`);
+
+  function renderLiveCourts() {
+    return `<section class="page-wrap live-list"><h1>Pickleball courts</h1><p>${escapeHtml(facility.location)}</p><div class="court-grid">${D.courts.map((court) => `<article class="court-card live-court"><div class="live-court-icon">${icon(court.type === "Indoor" ? "indoor" : "sun", 25)}</div><h2>${escapeHtml(court.name)}</h2><p>${court.type} · ${escapeHtml(court.surface)}</p><strong>${money(court.price)} / hour</strong>${button("View available times", `#book?court=${court.id}`, "button button-primary")}</article>`).join("")}</div></section>`;
+  }
+
+  function renderLiveAbout() {
+    return `<section class="page-wrap live-list"><h1>Visit ${escapeHtml(facility.name)}</h1><p>${escapeHtml(facility.location)}</p><p>Open daily, ${clockFromHour(rules.openHour)} – ${clockFromHour(rules.closeHour)} Manila time.</p>${preview ? "" : `<p>For booking changes or questions, email <a href="mailto:${escapeHtml(facility.email)}">${escapeHtml(facility.email)}</a>.</p>`}${button("Book a court", "#book")}</section>`;
+  }
+
+  function setupLiveNavigation() {
+    document.title = `${facility.name} · ${preview ? "Local preview" : "Pickleball court booking"}`;
+    document.querySelector('meta[name="description"]').setAttribute("content", `Reserve a pickleball court at ${facility.name}.`);
+    const ribbon = document.querySelector(".demo-ribbon");
+    ribbon.hidden = !preview;
+    if (preview) ribbon.textContent = "Local preview · Test bookings reset on restart";
+    document.querySelector('.main-nav [data-link="leaderboard"]').remove();
+    document.querySelector(".header-actions .management-link").remove();
+    document.querySelector(".header-actions .button").textContent = "Book a court";
+    document.querySelector(".site-header .brand").setAttribute("aria-label", `${facility.name} home`);
+    document.querySelector(".site-header .brand > span:last-child").textContent = facility.name;
+    document.querySelector(".site-footer").innerHTML = `<div class="footer-main"><div><strong>${escapeHtml(facility.name)}</strong><p>${escapeHtml(facility.location)}</p></div><div class="footer-links"><div>${preview ? "" : `<a href="mailto:${escapeHtml(facility.email)}">Contact the facility</a>`}${config.staffAvailable === false ? "" : '<a href="/staff">Staff bookings</a>'}</div></div></div>`;
+  }
+
+  const timeBands = { all: "All hours", morning: "Morning", afternoon: "Afternoon", evening: "Evening" };
+  const hourBand = (start) => start < "12:00" ? "morning" : start < "17:00" ? "afternoon" : "evening";
+  const slotKey = (courtId, start) => `${courtId}|${start}`;
+  const slotKeys = (slots) => new Set(slots.map(({ courtId, start }) => slotKey(courtId, start)));
+  const bookingNow = (booking) => rules.venueTime(booking.serverClock ? new Date(Date.now() + booking.serverClock.offset) : new Date());
+  function slotStatus(booking, courtId, start, now) {
+    if (rules.slotIsPast(booking.date, start, now)) return "past";
+    if (live) {
+      if (booking.availability?.date !== booking.date || booking.availability.loading || booking.availability.error) return "unknown";
+      return booking.availability.booked.has(slotKey(courtId, start)) ? "booked" : "open";
+    }
+    return allReservations().some((row) => row.courtId === courtId && row.date === booking.date && row.status !== "cancelled" &&
+      hourValue(start) < hourValue(row.start) + Number(row.duration) && hourValue(start) + 1 > hourValue(row.start)) ? "booked" : "open";
+  }
+  const bookingTotal = (booking) => booking.selectedSlots.reduce((sum, slot) => sum + courtById(slot.courtId).price, 0);
+  const sortedSlots = (slots) => [...slots].sort((a, b) => a.start.localeCompare(b.start) || a.courtId.localeCompare(b.courtId));
+  const durationLabel = (count) => `${count} court-hour${count === 1 ? "" : "s"}`;
+  const slotTime = (start) => `${clock(start)} – ${clockFromHour(hourValue(start) + 1)}`;
+
+  function dateStrip(booking, today, maxDate) {
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = addDays(booking.weekStart, index);
+      const disabled = date < today || date > maxDate;
+      return `<button type="button" class="booking-date-option ${booking.date === date ? "active" : ""} ${date === today ? "today" : ""}" data-booking-date="${date}" aria-label="${dateFmt(date)}" aria-pressed="${booking.date === date}" ${disabled ? "disabled" : ""}>
+        <span>${dateFmt(date, { weekday: "short" })}</span><strong>${dateFmt(date, { day: "numeric" })}</strong>${date === today ? '<small>Today</small>' : ""}</button>`;
+    }).join("");
+  }
+
+  function selectedSlotRows(slots, removable = false) {
+    return sortedSlots(slots).map((slot) => {
+      const court = courtById(slot.courtId);
+      const name = escapeHtml(slot.courtName ?? court.name);
+      return `<li><span class="selected-slot-mark">${icon("check", 14)}</span><span class="selected-slot-copy"><strong>${name}</strong><small>${slotTime(slot.start)}</small></span><strong class="selected-slot-price">${money(slot.price ?? court.price)}</strong>${removable ? `<button type="button" class="remove-slot" data-remove-slot="${slotKey(slot.courtId, slot.start)}" aria-label="Remove ${name} at ${clock(slot.start)}">×</button>` : ""}</li>`;
+    }).join("");
+  }
+
+  function renderSchedule(b, now) {
+    const availability = b.availability;
+    if (live && availability?.error) return `<div class="schedule-state" role="status"><p>Live availability couldn’t load.</p><button type="button" class="button button-quiet" data-retry-availability>Try again</button></div>`;
+    if (live && (availability?.date !== b.date || availability.loading)) return '<div class="schedule-state" role="status">Checking live availability…</div>';
+    const selectedKeys = slotKeys(b.selectedSlots);
+    const courts = b.court === "all" ? D.courts : [courtById(b.court)];
+    const starts = rules.starts.filter((start) => b.band === "all" || hourBand(start) === b.band);
+    const slotLabels = { open: "Available", selected: "Selected", past: "Past", booked: "Booked" };
+    return `<div class="court-schedules">${courts.map((court) => `<section class="court-schedule" aria-labelledby="court-${court.id}">
+      <div class="court-schedule-heading"><h3 id="court-${court.id}">${escapeHtml(court.name)}</h3><span>${escapeHtml(court.type)} · ${money(court.price)} / hour</span></div>
+      <div class="court-hours">${starts.map((start) => {
+        const selected = selectedKeys.has(slotKey(court.id, start));
+        const status = selected ? "selected" : slotStatus(b, court.id, start, now);
+        return `<button type="button" class="schedule-slot ${status}" data-booking-slot="${slotKey(court.id, start)}" aria-label="${escapeHtml(court.name)}, ${slotTime(start)}, ${slotLabels[status]}" aria-pressed="${selected}" ${status === "booked" || status === "past" ? "disabled" : ""}><strong>${clock(start)}</strong><span>${slotLabels[status]}</span></button>`;
+      }).join("")}</div></section>`).join("")}</div>`;
+  }
+
+  function renderConfirmation(confirmation) {
+    const cancelled = confirmation.status === "cancelled";
+    const title = cancelled ? "Booking cancelled" : preview ? "Test booking confirmed" : live ? "Booking confirmed" : "Demo booking complete";
+    return `<section class="booking-page page-wrap"><div class="booking-success">
+      <div class="success-mark">${cancelled ? '×' : icon("check", 34)}</div><h1 tabindex="-1" data-booking-heading>${title}</h1>
+      <p class="success-lede">${cancelled ? "The facility released the court-hours listed below." : preview ? "This local test booking will reset when the server restarts." : live ? "Save your booking reference and pay at the venue." : confirmation.persisted ? "This sample booking was saved in this browser." : "This sample booking is available until you reload this page."}</p>
+      <div class="confirmation-card"><div class="confirmation-top"><div><span>BOOKING REFERENCE</span><strong>${escapeHtml(confirmation.ref)}</strong></div><span class="confirmed-pill">${cancelled ? "Cancelled" : live ? "Confirmed" : "Demo"}</span></div>
+        <div class="confirmation-details"><div><small>BOOKING DATE</small><strong>${dateFmt(confirmation.date)}</strong></div><div><small>TIME ZONE</small><strong>Manila time</strong></div></div>
+        <ul class="review-slot-list">${selectedSlotRows(confirmation.reservations)}</ul>
+        <div class="confirmation-total"><span>${cancelled ? "Original total" : live ? "Due at the venue" : "Demo total"} · ${durationLabel(confirmation.reservations.length)}</span><strong>${money(confirmation.total)}</strong></div>
+      </div>${live && !preview && !cancelled ? `<p class="booking-contact"><strong>${escapeHtml(facility.name)}</strong> · ${escapeHtml(facility.location)}<br>For changes, give your reference to <a href="mailto:${escapeHtml(facility.email)}">${escapeHtml(facility.email)}</a>.</p>` : ""}
+      <div class="success-actions"><a class="button button-quiet" href="#home">Back to home</a><button type="button" class="button button-primary" data-book-another>Book another court time</button></div>
+    </div></section>`;
+  }
+
   function renderBooking() {
     const b = state.booking;
-    if (b.confirmation) return `<section class="booking-page page-wrap"><div class="booking-success"><div class="success-mark">${icon("check", 34)}</div><span class="eyebrow">DEMO BOOKING COMPLETE</span><h1>You're on the <em>court.</em></h1><p class="success-lede">Your sample reservation has been saved on this device. No real booking was submitted.</p><div class="confirmation-card"><div class="confirmation-top"><div><span>BOOKING REFERENCE</span><strong>${b.confirmation.ref}</strong></div><span class="confirmed-pill"><i></i> Demo confirmed</span></div><div class="confirmation-details"><div><small>COURT</small><strong>${courtById(b.courtId).name}</strong></div><div><small>DATE</small><strong>${dateFmt(b.date, { month: "long", day: "numeric", year: "numeric" })}</strong></div><div><small>TIME</small><strong>${clock(b.start)} – ${clockFromHour(hourValue(b.start) + Number(b.duration))}</strong></div><div><small>PLAYER</small><strong>${escapeHtml(b.customer.name)}</strong></div></div><div class="confirmation-total"><span>Estimated total · ${b.duration} ${b.duration === 1 ? "hour" : "hours"}</span><strong>${money(courtById(b.courtId).price * b.duration)}</strong></div></div><div class="success-actions"><a class="button button-primary" href="#home">Back to home ${icon("arrow", 16)}</a><button class="button button-quiet" data-book-another>Make another demo booking</button></div></div></section>`;
-    const steps = ["Court", "Date & time", "Your details", "Confirm"];
-    const currentCourt = courtById(b.courtId);
-    const availableSlots = b.date && b.courtId ? timeSlots().filter((s) => hourValue(s) + Number(b.duration) <= 22 && slotIsAvailable(b.courtId, b.date, s, b.duration)) : [];
-    const minimumDate = new Date(); minimumDate.setHours(0, 0, 0, 0);
-    const minimumString = new Date(minimumDate.getTime() - minimumDate.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-    return `<section class="booking-page page-wrap"><div class="booking-heading"><div><span class="eyebrow">A FEW TAPS AND YOU'RE THERE</span><h1>Book your <em>court.</em></h1><p>This interactive demo saves sample bookings only to your browser.</p></div><span class="demo-pill">● DEMO BOOKING</span></div>
-      <div class="booking-layout"><div class="booking-main"><div class="booking-progress">${steps.map((s, i) => `<div class="progress-step ${b.step === i + 1 ? "active" : ""} ${b.step > i + 1 ? "done" : ""}"><span>${b.step > i + 1 ? "✓" : `0${i + 1}`}</span><small>${s}</small></div>`).join("")}</div>
-      ${b.step === 1 ? `<div class="booking-step"><div class="step-title"><div><span class="step-kicker">STEP 01</span><h2>Choose your court</h2><p>Pick the space that suits your game.</p></div></div><div class="booking-court-list">${D.courts.map((c) => `<button class="booking-court-option ${b.courtId === c.id ? "selected" : ""}" data-select-court="${c.id}"><img src="${c.image}" alt="" /><span class="booking-court-info"><strong>${c.name}</strong><small>${c.type} · ${c.surface}</small></span><span class="booking-court-rate">${money(c.price)}<small>/hr</small></span><span class="radio-indicator"></span></button>`).join("")}</div><div class="booking-bottom"><span class="muted-copy">${icon("check", 15)} No payment needed for this demo</span><button class="button button-primary" data-next-step="2" ${!b.courtId ? "disabled" : ""}>Choose a date ${icon("arrow", 16)}</button></div></div>` :
-      b.step === 2 ? `<div class="booking-step"><div class="step-title"><div><span class="step-kicker">STEP 02</span><h2>Find a time to play</h2><p>All times shown in Central Time · 7:00 am – 10:00 pm</p></div><button class="subtle-button" data-back-step="1">← Change court</button></div><div class="selection-summary"><span class="mini-court-icon">${icon("ball", 18)}</span><span><strong>${currentCourt.name}</strong><small>${currentCourt.type} · ${money(currentCourt.price)}/hour</small></span></div><div class="field-group"><label for="booking-date">Choose a date</label><input id="booking-date" type="date" min="${minimumString}" value="${b.date}" /></div><div class="field-group"><label>How long would you like to play?</label><div class="duration-options">${[1, 1.5, 2].map((d) => `<button class="duration-chip ${Number(b.duration) === d ? "active" : ""}" data-duration="${d}">${d} ${d === 1 ? "hour" : "hours"}</button>`).join("")}</div></div><div class="field-group"><label>Available start times ${b.date ? `<span class="label-sub">${dateFmt(b.date, { weekday: "short", month: "short", day: "numeric" })}</span>` : ""}</label><div class="time-slots">${!b.date ? `<p class="inline-empty">Select a date to see available times.</p>` : availableSlots.length ? availableSlots.map((s) => `<button class="time-chip ${b.start === s ? "active" : ""}" data-start="${s}">${clock(s)}</button>`).join("") : `<p class="inline-empty">No times are available for this date and duration. Try another date or duration.</p>`}</div></div><div class="booking-bottom"><button class="subtle-button" data-back-step="1">← Back</button><button class="button button-primary" data-next-step="3" ${!b.date || !b.start ? "disabled" : ""}>Add your details ${icon("arrow", 16)}</button></div></div>` :
-      b.step === 3 ? `<div class="booking-step"><div class="step-title"><div><span class="step-kicker">STEP 03</span><h2>Who's playing?</h2><p>Just the basics. Your details stay right here in this demo.</p></div><button class="subtle-button" data-back-step="2">← Edit time</button></div><div class="selection-summary"><span class="mini-court-icon">${icon("ball", 18)}</span><span><strong>${currentCourt.name}</strong><small>${dateFmt(b.date, { weekday: "short", month: "short", day: "numeric" })} · ${clock(b.start)} · ${b.duration} ${b.duration === 1 ? "hour" : "hours"}</small></span></div><form id="customer-form" class="customer-form" novalidate><div class="field-group"><label for="customer-name">Full name</label><input id="customer-name" name="name" autocomplete="name" placeholder="e.g. Jamie Parker" value="${escapeHtml(b.customer.name)}" required /></div><div class="field-group"><label for="customer-email">Email address</label><input id="customer-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" value="${escapeHtml(b.customer.email)}" required /></div><div class="field-group"><label for="customer-phone">Phone number</label><input id="customer-phone" name="phone" type="tel" autocomplete="tel" placeholder="(555) 000-0000" value="${escapeHtml(b.customer.phone)}" required /></div><p class="privacy-note">${icon("check", 15)} Demo only. Information isn't sent or stored.</p><div class="booking-bottom"><button type="button" class="subtle-button" data-back-step="2">← Back</button><button class="button button-primary" type="submit">Review booking ${icon("arrow", 16)}</button></div></form></div>` :
-      `<div class="booking-step"><div class="step-title"><div><span class="step-kicker">STEP 04</span><h2>Review your game</h2><p>Everything look right? Confirm to finish this demo.</p></div><button class="subtle-button" data-back-step="3">← Edit details</button></div><div class="review-card"><div class="review-court-photo"><img src="${currentCourt.image}" alt="${currentCourt.name}" /><span>${currentCourt.type} court</span></div><div class="review-summary"><h3>${currentCourt.name}</h3><p>${currentCourt.surface}</p><div class="review-grid"><div><small>DATE</small><strong>${dateFmt(b.date, { weekday: "long", month: "long", day: "numeric" })}</strong></div><div><small>TIME</small><strong>${clock(b.start)} – ${clockFromHour(hourValue(b.start) + Number(b.duration))}</strong></div><div><small>DURATION</small><strong>${b.duration} ${b.duration === 1 ? "hour" : "hours"}</strong></div><div><small>PLAYER</small><strong>${escapeHtml(b.customer.name)}</strong></div><div><small>CONTACT</small><strong>${escapeHtml(b.customer.email)}</strong></div></div><div class="price-line"><span>${money(currentCourt.price)} × ${b.duration} ${b.duration === 1 ? "hour" : "hours"}</span><strong>${money(currentCourt.price * b.duration)}</strong></div><div class="price-line price-total"><span>Estimated total</span><strong>${money(currentCourt.price * b.duration)}</strong></div></div></div><div class="demo-warning">${icon("check", 16)} This is a demonstration. No real reservation, payment, or message will be made.</div><div class="booking-bottom"><button class="subtle-button" data-back-step="3">← Back</button><button class="button button-primary" data-confirm-booking>Confirm demo booking ${icon("arrow", 16)}</button></div></div>`}
-      </div><aside class="booking-aside"><div class="aside-card"><span class="eyebrow">THE RALLYCOURT PROMISE</span><h3>Less admin.<br /><em>More rallies.</em></h3><ul><li>${icon("check", 15)} Simple, flexible booking</li><li>${icon("check", 15)} Courts for every kind of game</li><li>${icon("check", 15)} A welcoming local community</li></ul><div class="aside-open"><span class="open-dot"></span><span><strong>Open today</strong><small>7:00 am – 10:00 pm</small></span></div></div><div class="help-card"><span>${icon("ball", 20)}</span><p><strong>Questions?</strong><br />We’re happy to help.</p><a href="mailto:hello@rallycourt.example">Get in touch →</a></div></aside></div></section>`;
+    if (b.confirmation) return renderConfirmation(b.confirmation);
+    const now = bookingNow(b);
+    const maxDate = addDays(now.date, rules.advanceDays);
+    const slots = b.selectedSlots;
+    const total = bookingTotal(b);
+    const steps = ["Choose time", "Your details", "Review"];
+    const canContinue = slots.length > 0 && (!live || (b.availability?.date === b.date && !b.availability.loading && !b.availability.error));
+    const nextLabel = `Continue${slots.length ? ` · ${money(total)}` : ""}`;
+    const dateLabel = dateFmt(b.date, { weekday: "long", month: "long", day: "numeric" });
+    const availabilityCount = D.courts.reduce((sum, court) => sum + rules.starts.filter((start) => slotStatus(b, court.id, start, now) === "open").length, 0);
+    const aside = `<aside class="booking-aside"><section class="booking-summary-card">
+      <div class="booking-summary-heading"><h2>Booking summary</h2><span class="summary-count">${slots.length}</span></div><p class="summary-date">${dateLabel}</p>
+      ${slots.length ? `<ul class="selected-slot-list">${selectedSlotRows(slots, b.step === 1)}</ul>` : '<div class="summary-empty"><strong>No court-hours selected</strong><p>Choose an available hour to start.</p></div>'}
+      <div class="summary-total-row" aria-live="polite" aria-atomic="true"><span>Total</span><strong>${money(total)}</strong></div>
+      <small class="summary-rate-note">${durationLabel(slots.length)} · ${live ? "Pay at the venue" : "Demo"}</small>
+      ${b.step === 1 ? `<button type="button" class="button button-primary summary-continue" data-next-step="2" ${canContinue ? "" : "disabled"}>Continue</button>` : ""}
+    </section></aside>`;
+    const message = b.message ? `<p class="booking-alert" role="alert" tabindex="-1" data-booking-message>${escapeHtml(b.message)}</p>` : "";
+
+    return `<section class="booking-page page-wrap"><div class="booking-heading"><div><h1 ${b.recovering ? 'tabindex="-1" data-booking-heading' : ""}>Book a court</h1><p>Reserve one or more court-hours on a single date. All times use Manila time.</p></div>${live ? "" : '<span class="demo-pill">DEMO BOOKING</span>'}</div>
+      ${b.recovering ? '<p class="schedule-state" role="status">Looking for your latest booking…</p>' : `<div class="booking-layout"><div class="booking-main">
+      <div class="booking-progress" aria-label="Booking progress">${steps.map((label, index) => `<div class="progress-step ${b.step === index + 1 ? "active" : ""} ${b.step > index + 1 ? "done" : ""}" ${b.step === index + 1 ? 'aria-current="step"' : ""}><span>${b.step > index + 1 ? "✓" : index + 1}</span><small>${label}</small></div>`).join("")}</div>
+      <div class="booking-step">${message}${b.step === 1 ? `
+        <div class="booking-step-heading"><h2 tabindex="-1" data-booking-heading>Choose a date and court time</h2><p>Each slot is one hour. You can select up to ${rules.maxSlots} in one booking.</p></div>
+        ${b.retryPending ? '<button type="button" class="button button-quiet" data-recover-booking>Check previous booking</button>' : ""}
+        <div class="booking-calendar-heading"><div><button type="button" class="calendar-nav" data-week-shift="-1" aria-label="Previous week" ${b.weekStart <= weekStartFor(now.date) ? "disabled" : ""}>‹</button><button type="button" class="calendar-nav" data-week-shift="1" aria-label="Next week" ${addDays(b.weekStart, 7) > maxDate ? "disabled" : ""}>›</button><button type="button" class="today-button" data-date-today>Today</button></div><label class="date-jump" for="booking-date"><span>Jump to date</span><input id="booking-date" type="date" min="${now.date}" max="${maxDate}" value="${b.date}" /></label></div>
+        <div class="booking-date-strip">${dateStrip(b, now.date, maxDate)}</div>
+        <div class="schedule-caption"><div><strong>${dateLabel}</strong><span>${clockFromHour(rules.openHour)} – ${clockFromHour(rules.closeHour)}</span></div><div class="availability-legend"><span><i class="legend-open"></i> Available</span><span><i class="legend-selected"></i> Selected</span><span><i class="legend-unavailable"></i> Unavailable</span></div></div>
+        ${availabilityCount || (live && (!b.availability || b.availability.loading || b.availability.error)) ? "" : '<p class="no-availability">No court-hours remain for this date. Choose another day.</p>'}
+        <div class="schedule-filters"><label>Court<select id="schedule-court"><option value="all">All courts</option>${D.courts.map((court) => `<option value="${court.id}" ${b.court === court.id ? "selected" : ""}>${escapeHtml(court.name)}</option>`).join("")}</select></label><label>Time of day<select id="schedule-band">${Object.entries(timeBands).map(([band, label]) => `<option value="${band}" ${b.band === band ? "selected" : ""}>${label}</option>`).join("")}</select></label></div>
+        ${renderSchedule(b, now)}
+        <div class="booking-grid-footer"><span role="status">${slots.length ? durationLabel(slots.length) + " selected" : "Choose at least one court-hour"}</span><button type="button" class="button button-primary" data-next-step="2" ${canContinue ? "" : "disabled"}>${nextLabel}</button></div>` : b.step === 2 ? `
+        <div class="step-title"><div><h2 tabindex="-1" data-booking-heading>Who's playing?</h2><p>${live ? "Enter the details the facility can use to identify and contact you about this booking." : "Use sample details for this demonstration."}</p></div></div>
+        <div class="details-selection-note"><strong>${durationLabel(slots.length)} selected</strong><span>${dateLabel} · ${money(total)}</span></div>
+        <form id="customer-form" class="customer-form" novalidate>
+          ${[["name", "Full name", "text", "name", 100], ["email", "Email address", "email", "email", 254], ["phone", "Phone number", "tel", "tel", 32]].map(([field, label, type, autocomplete, length]) => `<div class="field-group"><label for="customer-${field}">${label}</label><input id="customer-${field}" name="${field}" type="${type}" autocomplete="${autocomplete}" maxlength="${length}" value="${escapeHtml(b.customer[field])}" required ${b.errors[field] ? `aria-invalid="true" aria-describedby="${field}-error"` : ""} />${b.errors[field] ? `<span class="field-error" id="${field}-error">${escapeHtml(b.errors[field])}</span>` : ""}</div>`).join("")}
+          <div class="booking-bottom"><button type="button" class="subtle-button" data-back-step="1">Edit court times</button><button class="button button-primary" type="submit">Review booking</button></div>
+        </form>` : `
+        <div class="step-title"><div><h2 tabindex="-1" data-booking-heading>Review your booking</h2><p>${live ? "Check your details and court-hours. Payment is due at the venue." : "Check your details and court-hours before completing the demo."}</p></div></div>
+        <div class="review-customer-card"><div><strong>${escapeHtml(b.customer.name)}</strong><small>${escapeHtml(b.customer.email)} · ${escapeHtml(b.customer.phone)}</small></div><button type="button" class="subtle-button" data-back-step="2" ${b.submitting || b.retryPending ? "disabled" : ""}>Edit details</button></div>
+        <div class="review-date-card">${icon("clock", 19)}<span><small>BOOKING DATE · MANILA TIME</small><strong>${dateFmt(b.date)}</strong></span></div>
+        <ul class="review-slot-list">${selectedSlotRows(slots)}</ul>
+        <div class="review-total-row"><span><strong>${live ? "Due at the venue" : "Demo total"}</strong><small>${durationLabel(slots.length)}</small></span><strong>${money(total)}</strong></div>
+        ${live && !preview ? `<p class="booking-contact">For changes or cancellations, email <a href="mailto:${escapeHtml(facility.email)}">${escapeHtml(facility.email)}</a>.</p>` : ""}
+        <div class="booking-bottom"><button type="button" class="subtle-button" data-back-step="1" ${b.submitting || b.retryPending ? "disabled" : ""}>Edit court times</button><button type="button" class="button button-primary" data-confirm-booking ${b.submitting ? "disabled" : ""}>${b.submitting ? "Confirming…" : b.retryPending ? "Retry confirmation" : live ? "Confirm booking" : "Confirm demo booking"}</button></div>`}</div>
+    </div>${aside}</div>`}</section>`;
   }
 
   function playerStats(player, category, period) {
@@ -154,15 +312,17 @@
       <section class="section page-wrap about-details"><div><span class="eyebrow">OUR LITTLE CORNER OF THE COURT</span><h2>Built around the joy<br />of <em>one more game.</em></h2></div><div><p>From your first rally to your hundredth league match, we want finding a place to play to feel just as easy as picking up a paddle.</p><p>This demo shows how a modern club can bring online court reservations, community leaderboards, and facility insights together in one thoughtful experience.</p><a class="text-link" href="#management">Explore the management demo ${icon("arrow", 15)}</a></div></section><section class="page-wrap contact-panel" id="contact"><div><span class="eyebrow eyebrow-light">SAY HELLO</span><h2>See yourself here?</h2><p>This is a sample venue and contact details are placeholders for demonstration only.</p></div><a href="mailto:hello@rallycourt.example" class="button button-light">hello@rallycourt.example ${icon("arrow", 16)}</a></section>`;
   }
 
-  function dateKey(date) { return new Date(date).toISOString().slice(0, 10); }
+  function dateKey(date) {
+    if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+    return venueDateKey(date);
+  }
   function inRange(date, start, end) { return date >= start && date <= end; }
   function getAnalyticsRange() {
-    const now = new Date(); now.setHours(0, 0, 0, 0);
-    const today = dateKey(now);
-    let start = new Date(now), end = new Date(now);
-    if (state.analytics.range === "week") { start.setDate(now.getDate() - now.getDay()); end.setDate(start.getDate() + 6); }
-    else if (state.analytics.range === "month") { start.setDate(1); end.setMonth(now.getMonth() + 1, 0); }
-    else if (state.analytics.range === "year") { start.setMonth(0, 1); end.setMonth(11, 31); }
+    const today = venueDateKey();
+    let start = new Date(`${today}T12:00:00Z`), end = new Date(start);
+    if (state.analytics.range === "week") { start.setUTCDate(start.getUTCDate() - start.getUTCDay()); end.setUTCDate(start.getUTCDate() + 6); }
+    else if (state.analytics.range === "month") { start.setUTCDate(1); end.setUTCMonth(start.getUTCMonth() + 1, 0); }
+    else if (state.analytics.range === "year") { start.setUTCMonth(0, 1); end.setUTCMonth(11, 31); }
     else if (state.analytics.range === "custom") {
       return { start: state.analytics.start || today, end: state.analytics.end || today, label: `${state.analytics.start || today} – ${state.analytics.end || today}` };
     }
@@ -173,10 +333,10 @@
     let bookings = allReservations().filter((r) => inRange(r.date, range.start, range.end));
     // A larger seeded sample makes reporting periods useful beyond the dates used in the booking demo.
     const sample = [];
-    const base = new Date(); base.setHours(0, 0, 0, 0);
+    const base = new Date(`${venueDateKey()}T12:00:00Z`);
     for (let i = 0; i < 120; i++) {
-      const d = new Date(base); d.setDate(d.getDate() - i);
-      const day = d.getDay();
+      const d = new Date(base); d.setUTCDate(d.getUTCDate() - i);
+      const day = d.getUTCDay();
       const count = day === 0 || day === 6 ? 7 : 4;
       for (let j = 0; j < count; j++) {
         const court = D.courts[(i * 3 + j * 2) % D.courts.length];
@@ -254,32 +414,35 @@
       </div></div></section>`;
   }
 
-  let lastRenderedHash = "";
+  let lastRenderedHash = null;
   function render() {
     const currentHash = location.hash;
     const hashParts = currentHash.slice(1).split("?");
-    state.route = hashParts[0] || "home";
-    if (currentHash !== lastRenderedHash && state.route === "book" && hashParts[1]) {
+    const routes = live ? { home: renderLiveHome, courts: renderLiveCourts, book: renderBooking, about: renderLiveAbout } :
+      { home: renderHome, courts: renderCourts, book: renderBooking, leaderboard: renderLeaderboard, about: renderAbout, management: renderAnalytics };
+    state.route = Object.hasOwn(routes, hashParts[0]) ? hashParts[0] : "home";
+    const changedRoute = currentHash !== lastRenderedHash;
+    const enteredBooking = changedRoute && state.route === "book";
+    const focusRoute = changedRoute && lastRenderedHash !== null;
+    if (enteredBooking && state.booking.step === 1) {
       const court = new URLSearchParams(hashParts[1]).get("court");
-      if (D.courts.some((c) => c.id === court)) {
-        state.booking.courtId = court;
-        state.booking.date = "";
-        state.booking.start = "";
-        state.booking.duration = 1;
-        state.booking.confirmation = null;
-        state.booking.step = 1;
-      }
+      if (courtById(court)) state.booking.court = court;
     }
     lastRenderedHash = currentHash;
     document.body.classList.toggle("dashboard-body", state.route === "management");
-    const routes = { home: renderHome, courts: renderCourts, book: renderBooking, leaderboard: renderLeaderboard, about: renderAbout, management: renderAnalytics };
-    app.innerHTML = (routes[state.route] || renderHome)();
+    app.innerHTML = routes[state.route]();
     document.querySelectorAll(".main-nav a").forEach((a) => a.classList.toggle("active", a.dataset.link === state.route));
     document.querySelector(".site-header").classList.toggle("header-dashboard", state.route === "management");
     document.querySelector(".site-footer").classList.toggle("hidden", state.route === "management");
     document.querySelector(".mobile-menu-button").setAttribute("aria-expanded", "false");
     document.querySelector(".main-nav").classList.remove("nav-open");
     window.scrollTo({ top: 0, behavior: "instant" });
+    if (focusRoute) app.focus({ preventScroll: true });
+    if (enteredBooking && live) {
+      const b = state.booking;
+      if (b.requestKey && !b.submitting && (b.confirmation || b.step === 1)) recoverBooking();
+      else if (b.step === 1) loadAvailability();
+    }
   }
 
   let activeCourtFilter = "all";
@@ -295,26 +458,302 @@
     const stats = playerStats(player, state.leaderboard.category, state.leaderboard.period);
     modalRoot.innerHTML = `<div class="modal-backdrop" data-close-modal><section class="player-modal" role="dialog" aria-modal="true" aria-labelledby="player-modal-name"><button class="modal-close" aria-label="Close" data-close-modal>×</button><div class="profile-cover"></div><div class="profile-main"><div class="avatar profile-avatar" style="--avatar:${player.color}">${player.avatar}</div><span class="eyebrow">RALLYCOURT PLAYER</span><h2 id="player-modal-name">${player.name}</h2><p class="profile-handle">${player.handle} <span>·</span> ${player.city}</p><span class="level-pill">${player.level}</span><div class="profile-rank"><span>CURRENT RANK</span><strong>#${String(D.players.map(p => ({p, pts:playerStats(p,state.leaderboard.category,state.leaderboard.period).points})).sort((x,y)=>y.pts-x.pts).findIndex(x=>x.p.id===player.id)+1).padStart(2,"0")}</strong></div><div class="profile-stats"><div><strong>${stats.matches}</strong><small>MATCHES</small></div><div><strong>${stats.wins}</strong><small>WINS</small></div><div><strong>${stats.rate}%</strong><small>WIN RATE</small></div><div><strong>${stats.points.toLocaleString()}</strong><small>POINTS</small></div></div><div class="profile-results"><div><strong>Recent results</strong><span>Last 5 matches · sample data</span></div><div class="result-dots">${player.results.map((r) => `<span class="${r === "W" ? "result-win" : "result-loss"}">${r}</span>`).join("")}</div></div></div></section></div>`;
   }
-  function saveBooking() {
-    const b = state.booking;
-    if (!slotIsAvailable(b.courtId, b.date, b.start, b.duration)) {
-      b.step = 2; b.start = ""; rerender(); showToast("That time was just taken. Please choose another."); return;
-    }
-    const reservation = { courtId: b.courtId, date: b.date, start: b.start, duration: Number(b.duration), status: "confirmed", ref: `RC-${Math.random().toString(36).slice(2, 8).toUpperCase()}` };
-    state.savedBookings = [...state.savedBookings, reservation];
-    let persisted = true;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.savedBookings)); }
-    catch { persisted = false; }
-    b.confirmation = reservation;
-    rerender();
-    showToast(persisted ? "Demo booking saved on this device." : "Demo booking saved for this session only.");
+  function updateBooking(focus) {
+    if (state.route !== "book") return;
+    app.innerHTML = renderBooking();
+    if (focus) (app.querySelector?.(focus) ?? app.querySelector?.("[data-booking-heading]"))?.focus();
   }
+
+  function activeBookingControl() {
+    const active = document.activeElement;
+    if (active?.id === "booking-date" || active?.id === "schedule-band" || active?.id === "schedule-court") return `#${active.id}`;
+    if (active?.dataset.bookingSlot) return `[data-booking-slot="${active.dataset.bookingSlot}"]:not(:disabled)`;
+    if (active?.dataset.bookingDate) return `[data-booking-date="${active.dataset.bookingDate}"]:not(:disabled)`;
+    if (active?.hasAttribute("data-next-step")) return "[data-next-step]:not(:disabled)";
+    if (active?.hasAttribute("data-booking-message")) return "[data-booking-message]";
+    if (active?.hasAttribute("data-booking-heading")) return "[data-booking-heading]";
+  }
+
+  async function bookingApi(path, body) {
+    const response = await fetch(path, {
+      ...(body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(12000),
+    });
+    const data = await response.json();
+    if (!response.ok) throw Object.assign(new Error(data.message), data);
+    return data;
+  }
+
+  const conflictsFor = (b, now) => b.selectedSlots.filter((slot) => {
+    const status = slotStatus(b, slot.courtId, slot.start, now);
+    return status === "past" || status === "booked";
+  });
+
+  function removeConflicts(b, conflicts) {
+    const keys = slotKeys(conflicts);
+    b.selectedSlots = b.selectedSlots.filter((slot) => !keys.has(slotKey(slot.courtId, slot.start)));
+  }
+
+  function conflictMessage(conflicts) {
+    if (conflicts.length === 1) {
+      const { courtId, start } = conflicts[0];
+      return `${courtById(courtId).name} at ${clock(start)} is no longer available. Review your updated selection.`;
+    }
+    return `${durationLabel(conflicts.length)} are no longer available. Review your updated selection.`;
+  }
+
+  async function loadAvailability({ focus, background = false } = {}) {
+    const b = state.booking;
+    if (!live || b.confirmation || b.recovering || b.step !== 1) return;
+    const date = b.date;
+    const previous = b.availability;
+    const checking = background && previous?.date === date && !previous.error ? { ...previous } : { date, loading: true };
+    b.availability = checking;
+    if (checking.loading) updateBooking(focus);
+    try {
+      const data = await bookingApi(`/api/availability?date=${encodeURIComponent(date)}`);
+      if (b !== state.booking || b.availability !== checking || b.date !== date) return;
+      b.serverClock = { offset: data.now.epoch - Date.now() };
+      b.availability = { date, booked: slotKeys(data.booked) };
+      const conflicts = b.step === 1 ? conflictsFor(b, bookingNow(b)) : [];
+      if (conflicts.length) {
+        removeConflicts(b, conflicts);
+        if (!b.message) b.message = conflictMessage(conflicts);
+      }
+    } catch (error) {
+      if (b !== state.booking || b.availability !== checking || b.date !== date) return;
+      if (error.code === "DATE_RANGE" && error.now && error.now.date !== date) {
+        b.serverClock = { offset: error.now.epoch - Date.now() };
+        selectBookingDate(error.now.date, focus);
+        return;
+      }
+      b.availability = { date, error: true };
+    }
+    if (b.step === 1) updateBooking(activeBookingControl() ?? focus);
+  }
+
+  function selectBookingDate(candidate, focus) {
+    const b = state.booking;
+    const { date: today } = bookingNow(b);
+    if (b.step !== 1 || b.recovering) return;
+    if (!rules.validDate(candidate) || candidate < today || candidate > addDays(today, rules.advanceDays)) {
+      b.message = `Choose a date within the next ${rules.advanceDays} days in Manila time.`;
+      updateBooking("[data-booking-message]");
+      return;
+    }
+    if (candidate !== b.date) {
+      if (b.selectedSlots.length) b.otherDates.set(b.date, b.selectedSlots);
+      else b.otherDates.delete(b.date);
+      b.selectedSlots = b.otherDates.get(candidate) ?? [];
+      b.otherDates.delete(candidate);
+      b.date = candidate;
+      b.weekStart = weekStartFor(candidate);
+    }
+    b.message = "";
+    if (live) loadAvailability({ focus });
+    else updateBooking(focus);
+  }
+
+  function focusStep(step) {
+    state.booking.step = step;
+    updateBooking("[data-booking-heading]");
+  }
+
+  function setConfirmation(b, confirmation) {
+    b.confirmation = confirmation;
+    b.customer = { name: "", email: "", phone: "" };
+    b.otherDates.clear();
+    b.selectedSlots = [];
+    b.retryPending = false;
+  }
+
+  async function recoverBooking() {
+    const b = state.booking;
+    if (!b.requestKey || b.recovering || b.submitting) return;
+    b.recovering = true;
+    b.message = "";
+    updateBooking();
+    let found = false;
+    try {
+      setConfirmation(b, await bookingApi("/api/booking-status", { requestKey: b.requestKey }));
+      found = true;
+    } catch (error) {
+      if (error.code === "INVALID_REQUEST") setRequestKey(b, null);
+      b.retryPending = !["BOOKING_NOT_FOUND", "INVALID_REQUEST"].includes(error.code);
+      if (b.retryPending) b.message = "We couldn’t check your previous booking. Use ‘Check previous booking’ to try again.";
+    } finally {
+      b.recovering = false;
+      if (b !== state.booking) return;
+      if (found && state.route === "book") updateBooking("[data-booking-heading]");
+      else if (state.route === "book" && !b.confirmation) loadAvailability();
+    }
+  }
+
+  function saveDemoBooking(b) {
+    state.savedBookings = getSavedBookings().concat(state.savedBookings.filter((row) => row.sessionOnly));
+    const conflicts = conflictsFor(b, bookingNow(b));
+    if (conflicts.length) {
+      removeConflicts(b, conflicts);
+      b.message = conflictMessage(conflicts);
+      focusStep(1);
+      return;
+    }
+    const ref = `RC-${Math.random().toString(36).slice(2, 8).padEnd(6, "0").toUpperCase()}`;
+    const reservations = b.selectedSlots.map((slot) => ({ ...slot, date: b.date, duration: 1, status: "confirmed", ref }));
+    const confirmation = { ref, date: b.date, reservations, total: bookingTotal(b), status: "confirmed", persisted: true };
+    state.savedBookings = [...state.savedBookings, ...reservations];
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.savedBookings.map(({ sessionOnly, ...row }) => row)));
+      state.savedBookings.forEach((row) => { delete row.sessionOnly; });
+    }
+    catch {
+      confirmation.persisted = false;
+      reservations.forEach((row) => { row.sessionOnly = true; });
+    }
+    setConfirmation(b, confirmation);
+    updateBooking("[data-booking-heading]");
+  }
+
+  async function saveBooking() {
+    const b = state.booking;
+    if (b.step !== 3 || b.submitting || b.confirmation || !b.selectedSlots.length) return;
+    if (!live) return saveDemoBooking(b);
+    if (!b.requestKey) {
+      if (!window.crypto?.randomUUID) {
+        b.message = "Booking requires a secure connection. Open the HTTPS address or contact the facility.";
+        updateBooking("[data-booking-message]");
+        return;
+      }
+      setRequestKey(b, window.crypto.randomUUID());
+    }
+    b.submitting = true;
+    b.message = "";
+    updateBooking("[data-booking-heading]");
+    let focus = "[data-booking-heading]";
+    try {
+      const input = { requestKey: b.requestKey, date: b.date, slots: b.selectedSlots, customer: b.customer, expectedTotal: bookingTotal(b) };
+      let receipt;
+      try { receipt = await bookingApi("/api/bookings", input); }
+      catch (error) {
+        if (error.code !== "REQUEST_MISMATCH") throw error;
+        receipt = await bookingApi("/api/booking-status", { requestKey: b.requestKey });
+      }
+      setConfirmation(b, receipt);
+    } catch (error) {
+      focus = "[data-booking-message]";
+      const knownFailure = ["SLOT_UNAVAILABLE", "DATE_RANGE", "INVALID_CONTACT", "PRICE_CHANGED", "BOOKING_LIMIT", "INVALID_SLOT", "INVALID_BOOKING", "DUPLICATE_SLOT"].includes(error.code);
+      b.retryPending = !knownFailure;
+      if (knownFailure) setRequestKey(b, null);
+      b.message = knownFailure ? error.message : "We couldn’t verify your booking. Retry confirmation to check the same request.";
+      if (error.code === "SLOT_UNAVAILABLE") {
+        removeConflicts(b, error.conflicts);
+        b.message = conflictMessage(error.conflicts);
+        b.step = 1;
+      } else if (error.code === "DATE_RANGE") {
+        b.serverClock = { offset: error.now.epoch - Date.now() };
+        b.date = error.now.date;
+        b.weekStart = weekStartFor(b.date);
+        b.selectedSlots = [];
+        b.step = 1;
+      } else if (error.code === "INVALID_CONTACT") {
+        b.errors = error.errors;
+        b.step = 2;
+      } else if (error.code === "PRICE_CHANGED") {
+        for (const court of D.courts) if (Object.hasOwn(error.rates, court.id)) court.price = error.rates[court.id];
+      }
+    } finally {
+      b.submitting = false;
+      if (b === state.booking && state.route === "book") {
+        updateBooking(focus);
+        if (b.step === 1 && !b.confirmation) loadAvailability({ background: true });
+      }
+    }
+  }
+
   function resetDemo() {
     if (!confirm("Reset all demo bookings and restore the original sample availability on this device?")) return;
-    localStorage.removeItem(STORAGE_KEY);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem("rallycourt-demo-bookings-v1");
+    }
+    catch { /* Reset in-memory bookings even if storage is blocked. */ }
     state.savedBookings = [];
-    state.booking = { courtId: "", date: "", start: "", duration: 1, customer: { name: "", email: "", phone: "" }, confirmation: null, step: 1 };
+    state.booking = createBookingState();
     rerender(); showToast("Demo data has been reset.");
+  }
+
+  function handleBookingClick(target) {
+    const b = state.booking;
+    if (target.closest("[data-book-another]")) {
+      if (live) setRequestKey(b, null);
+      state.booking = createBookingState();
+      if (location.hash === "#book") {
+        updateBooking("[data-booking-heading]");
+        if (live) loadAvailability({ focus: "[data-booking-heading]" });
+      } else location.hash = "#book";
+      return;
+    }
+    if (target.closest("[data-confirm-booking]")) { saveBooking(); return; }
+    if (b.confirmation || b.recovering || b.submitting) return;
+    const back = target.closest("[data-back-step]");
+    if (back && !b.retryPending) {
+      b.message = "";
+      focusStep(Number(back.dataset.backStep));
+      if (b.step === 1 && live) loadAvailability({ background: true });
+      return;
+    }
+    if (b.step !== 1) return;
+    const slotButton = target.closest("[data-booking-slot]");
+    if (slotButton && !slotButton.disabled) {
+      const key = slotButton.dataset.bookingSlot;
+      const [courtId, start] = key.split("|");
+      if (!courtById(courtId) || !rules.starts.includes(start)) return;
+      b.message = "";
+      const slot = { courtId, start };
+      if (slotKeys(b.selectedSlots).has(key)) removeConflicts(b, [slot]);
+      else if (slotStatus(b, courtId, start, bookingNow(b)) !== "open") b.message = "That court-hour is no longer available.";
+      else if (b.selectedSlots.length >= rules.maxSlots) b.message = `Select up to ${rules.maxSlots} court-hours per booking.`;
+      else b.selectedSlots.push(slot);
+      updateBooking(b.message ? "[data-booking-message]" : `[data-booking-slot="${key}"]`);
+      return;
+    }
+    const remove = target.closest("[data-remove-slot]");
+    if (remove) {
+      const [courtId, start] = remove.dataset.removeSlot.split("|");
+      removeConflicts(b, [{ courtId, start }]);
+      b.message = "";
+      updateBooking("[data-remove-slot]");
+      return;
+    }
+    const dateOption = target.closest("[data-booking-date]");
+    if (dateOption && !dateOption.disabled) {
+      const date = dateOption.dataset.bookingDate;
+      selectBookingDate(date, `[data-booking-date="${date}"]`);
+      return;
+    }
+    const week = target.closest("[data-week-shift]");
+    if (week && !week.disabled) {
+      const date = addDays(b.weekStart, Number(week.dataset.weekShift) * 7);
+      const { date: today } = bookingNow(b);
+      selectBookingDate(date < today ? today : date, `[data-week-shift="${week.dataset.weekShift}"]:not(:disabled)`);
+      return;
+    }
+    if (target.closest("[data-date-today]")) { selectBookingDate(bookingNow(b).date, "[data-date-today]"); return; }
+    if (target.closest("[data-retry-availability]")) { loadAvailability({ focus: "[data-booking-heading]" }); return; }
+    if (target.closest("[data-recover-booking]")) { recoverBooking(); return; }
+    const next = target.closest("[data-next-step]");
+    if (next && !next.disabled && b.selectedSlots.length) {
+      const conflicts = conflictsFor(b, bookingNow(b));
+      if (conflicts.length) {
+        removeConflicts(b, conflicts);
+        b.message = conflictMessage(conflicts);
+        updateBooking("[data-booking-message]");
+        return;
+      }
+      b.message = "";
+      b.retryPending = false;
+      focusStep(2);
+    }
   }
 
   document.addEventListener("click", (event) => {
@@ -332,26 +771,7 @@
       document.querySelector("#court-list").innerHTML = D.courts.filter((c) => activeCourtFilter === "all" || c.type === activeCourtFilter).map(courtCard).join("");
       return;
     }
-    const court = event.target.closest("[data-select-court]");
-    if (court) { state.booking.courtId = court.dataset.selectCourt; rerender(); return; }
-    const next = event.target.closest("[data-next-step]");
-    if (next && !next.disabled) {
-      if (Number(next.dataset.nextStep) === 3 && (!state.booking.date || !state.booking.start)) return;
-      state.booking.step = Number(next.dataset.nextStep); rerender(); return;
-    }
-    const back = event.target.closest("[data-back-step]");
-    if (back) { state.booking.step = Number(back.dataset.backStep); rerender(); return; }
-    const duration = event.target.closest("[data-duration]");
-    if (duration) {
-      state.booking.duration = Number(duration.dataset.duration);
-      if (state.booking.start && !slotIsAvailable(state.booking.courtId, state.booking.date, state.booking.start, state.booking.duration)) state.booking.start = "";
-      rerender(); return;
-    }
-    const start = event.target.closest("[data-start]");
-    if (start) { state.booking.start = start.dataset.start; rerender(); return; }
-    const confirmButton = event.target.closest("[data-confirm-booking]");
-    if (confirmButton) { saveBooking(); return; }
-    if (event.target.closest("[data-book-another]")) { state.booking = { courtId: "", date: "", start: "", duration: 1, customer: { name: "", email: "", phone: "" }, confirmation: null, step: 1 }; rerender(); location.hash = "#book"; return; }
+    if (state.route === "book") handleBookingClick(event.target);
     const playerRow = event.target.closest("[data-player]");
     if (playerRow) { showPlayer(playerRow.dataset.player); return; }
     if (event.target.closest("[data-close-modal]") && (event.target === event.target.closest(".modal-backdrop") || event.target.closest(".modal-close"))) { modalRoot.innerHTML = ""; return; }
@@ -375,23 +795,26 @@
       document.querySelector("#trend-chart").innerHTML = chartBars(items, "count", Math.max(...items.map(x=>x.count),1), "day", "trend-bars"); return;
     }
     if (event.target.closest("[data-export-report]")) {
-      const a = buildAnalytics(); const rows = [["RallyCourt demo report"],["Date range",a.range.label],[],["Metric","Value"],["Total bookings",a.bookings.length],["Confirmed bookings",a.confirmed.length],["Pending bookings",a.pending.length],["Cancelled bookings",a.cancelled.length],["Estimated revenue (USD)",a.revenue],["Court utilization (%)",a.utilization],[],["Court","Confirmed bookings","Estimated revenue (USD)"],...a.courtCounts.map(c=>[c.name,a.confirmed.filter(r=>r.courtId===c.id).length,a.confirmed.filter(r=>r.courtId===c.id).reduce((sum,r)=>sum+c.price*r.duration,0)])];
+      const a = buildAnalytics(); const rows = [["RallyCourt demo report"],["Date range",a.range.label],[],["Metric","Value"],["Total bookings",a.bookings.length],["Confirmed bookings",a.confirmed.length],["Pending bookings",a.pending.length],["Cancelled bookings",a.cancelled.length],["Estimated revenue (PHP)",a.revenue],["Court utilization (%)",a.utilization],[],["Court","Confirmed bookings","Estimated revenue (PHP)"],...a.courtCounts.map(c=>[c.name,a.confirmed.filter(r=>r.courtId===c.id).length,a.confirmed.filter(r=>r.courtId===c.id).reduce((sum,r)=>sum+c.price*r.duration,0)])];
       const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\r\n"); const blob = new Blob([csv],{type:"text/csv"}); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href=url; link.download="rallycourt-demo-report.csv"; link.click(); URL.revokeObjectURL(url); showToast("Sample CSV report downloaded."); return;
     }
     if (event.target.closest("[data-reset-demo]")) resetDemo();
   });
   document.addEventListener("change", (event) => {
-    if (event.target.id === "booking-date") {
-      const candidate = event.target.value;
-      const localToday = new Date(); localToday.setHours(0, 0, 0, 0);
-      const minDate = new Date(localToday.getTime() - localToday.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
-      if (candidate && candidate < minDate) { showToast("Please choose today or a future date."); return; }
-      state.booking.date = candidate; state.booking.start = ""; rerender();
+    if (event.target.id === "booking-date") selectBookingDate(event.target.value, "#booking-date");
+    else if (event.target.id === "schedule-court") {
+      state.booking.court = event.target.value;
+      updateBooking("#schedule-court");
+    } else if (event.target.id === "schedule-band") {
+      state.booking.band = event.target.value;
+      updateBooking("#schedule-band");
     } else if (event.target.id === "leader-category") { state.leaderboard.category = event.target.value; rerender(); }
     else if (event.target.id === "leader-period") { state.leaderboard.period = event.target.value; rerender(); }
   });
   document.addEventListener("input", (event) => {
-    if (event.target.id === "player-search") {
+    if (event.target.form?.id === "customer-form" && Object.hasOwn(state.booking.customer, event.target.name)) {
+      state.booking.customer[event.target.name] = event.target.value;
+    } else if (event.target.id === "player-search") {
       const start = event.target.selectionStart;
       state.leaderboard.search = event.target.value;
       const scrollY = window.scrollY;
@@ -405,14 +828,16 @@
   document.addEventListener("submit", (event) => {
     if (event.target.id !== "customer-form") return;
     event.preventDefault();
-    const form = event.target;
-    if (!form.reportValidity()) return;
-    const data = new FormData(form);
-    const customer = { name: data.get("name").trim(), email: data.get("email").trim(), phone: data.get("phone").trim() };
-    if (customer.name.length < 2 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer.email) || customer.phone.replace(/\D/g, "").length < 7) {
-      showToast("Please enter a valid name, email, and phone number."); return;
-    }
-    state.booking.customer = customer; state.booking.step = 4; rerender();
+    const b = state.booking;
+    if (b.step !== 2 || !b.selectedSlots.length) return;
+    const data = new FormData(event.target);
+    const { customer, errors } = rules.checkCustomer({ name: data.get("name"), email: data.get("email"), phone: data.get("phone") });
+    b.customer = customer;
+    b.errors = errors;
+    const invalidField = Object.keys(errors)[0];
+    if (invalidField) { updateBooking(`#customer-${invalidField}`); return; }
+    b.message = "";
+    focusStep(3);
   });
   window.addEventListener("hashchange", render);
   window.addEventListener("keydown", (event) => {
@@ -422,5 +847,14 @@
     }
     if (event.key === "Enter" && event.target.matches("tr[data-player]")) showPlayer(event.target.dataset.player);
   });
+  if (live) {
+    setupLiveNavigation();
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && state.route === "book") {
+        if (state.booking.confirmation) recoverBooking();
+        else loadAvailability({ background: true });
+      }
+    });
+  }
   render();
 })();
