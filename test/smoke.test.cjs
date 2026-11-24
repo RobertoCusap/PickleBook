@@ -80,11 +80,13 @@ test("public pages, booking flow, overlap protection, leaderboard, and dashboard
   const data = context.window.RALLY_DATA;
 
   assert.match(app.innerHTML, /More play\./);
+  assert.match(app.innerHTML, /Less admin\./);
+  assert.match(app.innerHTML, /See the owner dashboard/);
   navigate("#courts");
   assert.match(app.innerHTML, /The Center Court/);
   assert.match(app.innerHTML, /Outdoor/);
   navigate("#about");
-  assert.match(app.innerHTML, /fictional neighborhood pickleball club/i);
+  assert.match(app.innerHTML, /fictional pickleball club/i);
 
   navigate("#leaderboard");
   assert.match(app.innerHTML, /THE CLUB LEADERBOARD/);
@@ -98,6 +100,7 @@ test("public pages, booking flow, overlap protection, leaderboard, and dashboard
   navigate("#management");
   assert.match(app.innerHTML, /DEMO DASHBOARD/);
   assert.match(app.innerHTML, /Download sample CSV/);
+  assert.match(app.innerHTML, /Revenue trend/);
   dispatch("click", "[data-range]", { dataset: { range: "week" } });
   assert.match(app.innerHTML, /This week/);
 
